@@ -1,4 +1,5 @@
-import os, base64, re
+import os, base64, re, secrets
+import requests as http_requests
 from datetime import datetime, timedelta
 from flask import Flask, redirect, url_for, session, request, jsonify, render_template
 from google_auth_oauthlib.flow import Flow
@@ -59,6 +60,17 @@ def parse_days(text):
         return n*(7 if u=="week" else 30 if u=="month" else 1)
     return 3
 
+GOOGLE_CLIENT_SECRETS = None
+
+def get_client_secrets():
+    global GOOGLE_CLIENT_SECRETS
+    if not GOOGLE_CLIENT_SECRETS:
+        import json
+        with open('credentials.json') as f:
+            data = json.load(f)
+        GOOGLE_CLIENT_SECRETS = data.get('web', data.get('installed'))
+    return GOOGLE_CLIENT_SECRETS
+
 @app.route('/')
 def index():
     return render_template('index.html', logged_in='credentials' in session,
@@ -66,24 +78,59 @@ def index():
 
 @app.route('/authorize')
 def authorize():
-    flow = Flow.from_client_secrets_file('credentials.json', scopes=SCOPES)
-    flow.redirect_uri = url_for('oauth2callback', _external=True)
-    auth_url, state = flow.authorization_url(access_type='offline', prompt='consent')
+    secrets_data = get_client_secrets()
+    state = secrets.token_urlsafe(16)
+    redirect_uri = url_for('oauth2callback', _external=True)
+    params = {
+        'client_id': secrets_data['client_id'],
+        'redirect_uri': redirect_uri,
+        'response_type': 'code',
+        'scope': ' '.join(SCOPES),
+        'access_type': 'offline',
+        'prompt': 'consent',
+        'state': state,
+    }
     session['state'] = state
+    session['redirect_uri'] = redirect_uri
+    auth_url = 'https://accounts.google.com/o/oauth2/v2/auth?' + '&'.join(f"{k}={v}" for k,v in params.items())
     return redirect(auth_url)
 
 @app.route('/oauth2callback')
 def oauth2callback():
-    flow = Flow.from_client_secrets_file('credentials.json', scopes=SCOPES, state=session['state'])
-    flow.redirect_uri = url_for('oauth2callback', _external=True)
-    flow.fetch_token(authorization_response=request.url)
-    creds = flow.credentials
-    session['credentials'] = creds_to_dict(creds)
+    if request.args.get('state') != session.get('state'):
+        return 'State mismatch', 400
+
+    secrets_data = get_client_secrets()
+    code = request.args.get('code')
+
+    token_response = http_requests.post('https://oauth2.googleapis.com/token', data={
+        'code': code,
+        'client_id': secrets_data['client_id'],
+        'client_secret': secrets_data['client_secret'],
+        'redirect_uri': session.get('redirect_uri'),
+        'grant_type': 'authorization_code',
+    })
+
+    tokens = token_response.json()
+    if 'error' in tokens:
+        return jsonify(tokens), 400
+
+    session['credentials'] = {
+        'token': tokens['access_token'],
+        'refresh_token': tokens.get('refresh_token'),
+        'token_uri': 'https://oauth2.googleapis.com/token',
+        'client_id': secrets_data['client_id'],
+        'client_secret': secrets_data['client_secret'],
+        'scopes': SCOPES,
+    }
+
     try:
-        info = build('oauth2','v2',credentials=creds).userinfo().get().execute()
-        session['user_name']  = info.get('name','')
-        session['user_email'] = info.get('email','')
+        info = http_requests.get('https://www.googleapis.com/oauth2/v2/userinfo',
+            headers={'Authorization': f"Bearer {tokens['access_token']}"}).json()
+        session['user_name']  = info.get('name', '')
+        session['user_email'] = info.get('email', '')
     except: pass
+
     return redirect(url_for('dashboard'))
 
 @app.route('/logout')
