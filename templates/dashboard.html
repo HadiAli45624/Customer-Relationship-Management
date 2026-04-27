@@ -12,6 +12,7 @@
   --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12);
   --accent: #4f8ef7; --accent2: #7c5cfc; --text: #e8eaf0; --muted: #7a7f8e;
   --success: #3dd68c; --warning: #f5a623; --danger: #f76f6f;
+  --send: #34c9a8;
 }
 body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text);
        min-height: 100vh; display: flex; flex-direction: column; }
@@ -59,7 +60,6 @@ nav { display: flex; align-items: center; justify-content: space-between;
                 border-radius: 4px; transition: all 0.2s; }
 .delete-lead:hover { background: var(--danger); color: #fff; }
 
-/* Lead list container — no extra gap between cards */
 #lead-list { display: flex; flex-direction: column; gap: 0.75rem; }
 
 .btn-add { width: 100%; padding: 0.7rem; background: var(--surface2);
@@ -68,12 +68,37 @@ nav { display: flex; align-items: center; justify-content: space-between;
             font-family: 'DM Sans'; transition: all 0.2s; }
 .btn-add:hover { border-color: var(--accent); color: var(--accent); }
 
-.btn-sheet { width: 100%; padding: 0.8rem; background: linear-gradient(135deg,var(--accent),var(--accent2));
-              border: none; border-radius: 10px; color: #fff; font-size: 0.9rem;
+/* Sidebar action buttons row */
+.sidebar-actions { display: flex; gap: 0.5rem; }
+
+.btn-sheet { flex: 1; padding: 0.8rem; background: linear-gradient(135deg,var(--accent),var(--accent2));
+              border: none; border-radius: 10px; color: #fff; font-size: 0.85rem;
               font-weight: 600; cursor: pointer; font-family: 'DM Sans';
               transition: opacity 0.2s; }
 .btn-sheet:hover { opacity: 0.85; }
 .btn-sheet:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Clear queue button */
+.btn-clear-queue {
+  padding: 0.8rem 0.9rem;
+  background: transparent;
+  border: 1px solid rgba(247,111,111,0.3);
+  border-radius: 10px;
+  color: var(--danger);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'DM Sans';
+  transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-clear-queue:hover:not(:disabled) {
+  background: rgba(247,111,111,0.1);
+  border-color: var(--danger);
+}
+.btn-clear-queue:disabled { opacity: 0.3; cursor: not-allowed; }
+
 .sheet-open-btn { display: flex; align-items: center; gap: 0.6rem; width: 100%;
                    padding: 0.7rem 1rem; background: rgba(61,214,140,0.08);
                    border: 1px solid rgba(61,214,140,0.35); border-radius: 10px;
@@ -136,12 +161,132 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
 .email-subj { font-weight: 500; font-size: 0.88rem; margin-bottom: 0.3rem; }
 .email-meta { font-size: 0.78rem; color: var(--muted); font-family: 'DM Mono'; }
 
+/* ── Draft actions ── */
 .draft-area { position: relative; }
-.draft-actions { display: flex; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap; }
-.btn-outline { padding: 0.6rem 1.2rem; border: 1px solid var(--border2); border-radius: 8px;
-                background: transparent; color: var(--text); font-size: 0.85rem;
-                cursor: pointer; font-family: 'DM Sans'; transition: all 0.2s; }
+
+/* Subject + buttons row */
+.draft-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+/* Email action buttons group — sits to the right of the subject input */
+.email-action-btns {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  align-items: flex-end;
+}
+
+/* Base outline button */
+.btn-outline {
+  padding: 0.6rem 1.2rem;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-family: 'DM Sans';
+  transition: all 0.2s;
+  white-space: nowrap;
+}
 .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Save draft button — subtle grey */
+.btn-save-draft {
+  border-color: var(--border2);
+  color: var(--muted);
+}
+.btn-save-draft:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(79,142,247,0.07);
+}
+
+/* Send email button — teal accent, prominent */
+.btn-send-email {
+  padding: 0.6rem 1.4rem;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #34c9a8, #2aa88c);
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'DM Sans';
+  transition: all 0.2s;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  box-shadow: 0 2px 12px rgba(52,201,168,0.25);
+}
+.btn-send-email:hover {
+  opacity: 0.9;
+  box-shadow: 0 4px 18px rgba(52,201,168,0.35);
+  transform: translateY(-1px);
+}
+.btn-send-email:active { transform: translateY(0); }
+.btn-send-email:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Send confirm modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px); z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+.modal-overlay.show { opacity: 1; pointer-events: auto; }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 16px;
+  padding: 2rem;
+  width: 440px;
+  max-width: 90vw;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+  transform: scale(0.95) translateY(8px);
+  transition: transform 0.2s;
+}
+.modal-overlay.show .modal { transform: scale(1) translateY(0); }
+.modal-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  background: rgba(52,201,168,0.12);
+  border: 1px solid rgba(52,201,168,0.3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.4rem; margin-bottom: 1.25rem;
+}
+.modal h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.5rem; }
+.modal p { font-size: 0.88rem; color: var(--muted); line-height: 1.6; margin-bottom: 0.35rem; }
+.modal-meta { margin: 1rem 0; padding: 0.9rem 1rem;
+               background: var(--surface2); border-radius: 8px;
+               border: 1px solid var(--border); }
+.modal-meta .meta-row { display: flex; gap: 0.5rem; font-size: 0.82rem; margin-bottom: 0.3rem; }
+.modal-meta .meta-row:last-child { margin-bottom: 0; }
+.modal-meta .meta-label { color: var(--muted); min-width: 60px; }
+.modal-meta .meta-value { color: var(--text); font-family: 'DM Mono'; font-size: 0.8rem;
+                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-footer { display: flex; gap: 0.75rem; margin-top: 1.5rem; justify-content: flex-end; }
+.btn-modal-cancel { padding: 0.6rem 1.2rem; border: 1px solid var(--border2);
+                     border-radius: 8px; background: transparent; color: var(--muted);
+                     font-size: 0.88rem; cursor: pointer; font-family: 'DM Sans'; transition: all 0.2s; }
+.btn-modal-cancel:hover { color: var(--text); border-color: var(--border2); }
+.btn-modal-confirm { padding: 0.6rem 1.4rem; border: none; border-radius: 8px;
+                      background: linear-gradient(135deg, #34c9a8, #2aa88c);
+                      color: #fff; font-size: 0.88rem; font-weight: 600;
+                      cursor: pointer; font-family: 'DM Sans'; transition: all 0.2s;
+                      display: flex; align-items: center; gap: 0.4rem; }
+.btn-modal-confirm:hover { opacity: 0.88; }
+.btn-modal-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Clear queue confirm modal */
+.modal-icon.danger { background: rgba(247,111,111,0.1); border-color: rgba(247,111,111,0.3); }
+.btn-modal-confirm.danger { background: linear-gradient(135deg, #f76f6f, #d94f4f); }
+
 .btn-success { background: rgba(61,214,140,0.15); border-color: var(--success); color: var(--success); }
 
 .reminder-row { display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap; }
@@ -153,6 +298,7 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
 /* STATE */
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border2);
             border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+.spinner-light { border-color: rgba(255,255,255,0.3); border-top-color: #fff; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .toast { position: fixed; bottom: 2rem; right: 2rem; background: var(--surface);
           border: 1px solid var(--border2); border-radius: 10px; padding: 0.85rem 1.25rem;
@@ -182,10 +328,15 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
   <aside class="sidebar">
     <div class="sidebar-title">Lead queue (<span id="lead-count">0</span>)</div>
 
-    <!-- Sheet button ABOVE the queue -->
-    <button class="btn-sheet" id="btn-create-sheet" disabled onclick="createSheet()">
-      📊 Create Google Sheet
-    </button>
+    <!-- Sheet + Clear buttons row -->
+    <div class="sidebar-actions">
+      <button class="btn-sheet" id="btn-create-sheet" disabled onclick="createSheet()">
+        📊 Create Sheet
+      </button>
+      <button class="btn-clear-queue" id="btn-clear-queue" disabled onclick="confirmClearQueue()">
+        🗑 Clear
+      </button>
+    </div>
     <div id="sheet-link-row" class="sheet-link-row" style="display:none"></div>
 
     <!-- Lead cards -->
@@ -266,16 +417,26 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
           </div>
         </div>
 
+        <!-- Draft section with Send + Save Draft -->
         <div class="form-section">
           <h2>✍️ Draft email</h2>
           <div class="form-group draft-area">
             <textarea id="draft-email" rows="7"></textarea>
             <div class="draft-actions">
-              <div class="form-group" style="flex:1.5">
+              <div class="form-group" style="flex:1.5;min-width:180px">
                 <label>Subject line</label>
                 <input type="text" id="draft-subject" placeholder="Re: …">
               </div>
-              <button class="btn-outline" onclick="saveDraft()">Save to Gmail Drafts</button>
+              <div class="email-action-btns">
+                <!-- Save to draft — subtle -->
+                <button class="btn-outline btn-save-draft" onclick="saveDraft()">
+                  💾 Save Draft
+                </button>
+                <!-- Send now — prominent teal -->
+                <button class="btn-send-email" id="btn-send-email" onclick="openSendModal()">
+                  <span>📤</span> Send Now
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -306,6 +467,46 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
 
 <div class="toast" id="toast"></div>
 
+<!-- ── Send Email Confirmation Modal ───────────────────────────────────────── -->
+<div class="modal-overlay" id="send-modal">
+  <div class="modal">
+    <div class="modal-icon">📤</div>
+    <h3>Send this email?</h3>
+    <p>This will send the email immediately from your Gmail account. This action cannot be undone.</p>
+    <div class="modal-meta">
+      <div class="meta-row">
+        <span class="meta-label">To</span>
+        <span class="meta-value" id="modal-to">—</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Subject</span>
+        <span class="meta-value" id="modal-subject">—</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-modal-cancel" onclick="closeSendModal()">Cancel</button>
+      <button class="btn-modal-confirm" id="btn-modal-confirm-send" onclick="confirmSendEmail()">
+        📤 Send Email
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Clear Queue Confirmation Modal ─────────────────────────────────────── -->
+<div class="modal-overlay" id="clear-modal">
+  <div class="modal">
+    <div class="modal-icon danger">🗑</div>
+    <h3>Clear all leads?</h3>
+    <p>This will permanently remove all <strong id="clear-count">0</strong> leads from the queue. This cannot be undone.</p>
+    <div class="modal-footer">
+      <button class="btn-modal-cancel" onclick="closeClearModal()">Cancel</button>
+      <button class="btn-modal-confirm danger" onclick="clearAllLeads()">
+        🗑 Clear All
+      </button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
@@ -329,7 +530,7 @@ function setLoading(btnId, loading, text='') {
   if (!btn) return;
   if (loading) {
     btn.dataset.orig = btn.innerHTML;
-    btn.innerHTML = `<span class="spinner"></span> ${text}`;
+    btn.innerHTML = `<span class="spinner spinner-light"></span> ${text}`;
     btn.disabled = true;
   } else {
     btn.innerHTML = btn.dataset.orig;
@@ -475,6 +676,57 @@ async function saveDraft() {
   } catch(e) { showToast('Failed: ' + e.message, 'error'); }
 }
 
+// ── Send email — modal flow ───────────────────────────────────────────────────
+function openSendModal() {
+  const to      = document.getElementById('input-email').value.trim();
+  const subject = document.getElementById('draft-subject').value.trim() || 'Follow-up';
+  const body    = document.getElementById('draft-email').value.trim();
+  if (!to)   { showToast('No recipient email set.', 'error'); return; }
+  if (!body) { showToast('Draft is empty.', 'error'); return; }
+  document.getElementById('modal-to').textContent      = to;
+  document.getElementById('modal-subject').textContent = subject || '(no subject)';
+  document.getElementById('send-modal').classList.add('show');
+}
+
+function closeSendModal() {
+  document.getElementById('send-modal').classList.remove('show');
+}
+
+async function confirmSendEmail() {
+  const to      = document.getElementById('input-email').value.trim();
+  const subject = document.getElementById('draft-subject').value.trim() || 'Follow-up';
+  const body    = document.getElementById('draft-email').value.trim();
+
+  const confirmBtn = document.getElementById('btn-modal-confirm-send');
+  confirmBtn.disabled = true;
+  confirmBtn.innerHTML = `<span class="spinner spinner-light"></span> Sending…`;
+
+  try {
+    const res = await fetch('/api/send-email', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({to, subject, body})
+    });
+    const data = await res.json();
+    closeSendModal();
+    if (data.success) {
+      showToast('✓ Email sent successfully!', 'success');
+    } else {
+      showToast(data.error || 'Failed to send.', 'error');
+    }
+  } catch(e) {
+    closeSendModal();
+    showToast('Failed: ' + e.message, 'error');
+  } finally {
+    confirmBtn.disabled = false;
+    confirmBtn.innerHTML = '📤 Send Email';
+  }
+}
+
+// Close modal on overlay click
+document.getElementById('send-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeSendModal();
+});
+
 // ── Calendar reminder ─────────────────────────────────────────────────────────
 async function createReminder() {
   const date = document.getElementById('reminder-date').value;
@@ -500,7 +752,6 @@ async function createReminder() {
 function saveLeadAndContinue() {
   if (state.current) {
     state.current.draft_email = document.getElementById('draft-email').value;
-    // Only add if not already in queue (prevent duplicates)
     const alreadyExists = state.leads.some(l => l.lead_email === state.current.lead_email);
     if (!alreadyExists) {
       state.leads.push({...state.current});
@@ -537,12 +788,35 @@ function deleteLead(idx) {
   renderLeads();
 }
 
+// ── Clear queue ───────────────────────────────────────────────────────────────
+function confirmClearQueue() {
+  document.getElementById('clear-count').textContent = state.leads.length;
+  document.getElementById('clear-modal').classList.add('show');
+}
+
+function closeClearModal() {
+  document.getElementById('clear-modal').classList.remove('show');
+}
+
+function clearAllLeads() {
+  state.leads = [];
+  renderLeads();
+  closeClearModal();
+  showToast('Queue cleared.', 'success');
+}
+
+document.getElementById('clear-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeClearModal();
+});
+
 function renderLeads() {
   const list = document.getElementById('lead-list');
   document.getElementById('lead-count').textContent = state.leads.length;
-  document.getElementById('btn-create-sheet').disabled = state.leads.length === 0;
+  const hasLeads = state.leads.length > 0;
+  document.getElementById('btn-create-sheet').disabled = !hasLeads;
+  document.getElementById('btn-clear-queue').disabled  = !hasLeads;
 
-  if (state.leads.length === 0) {
+  if (!hasLeads) {
     list.innerHTML = '<p style="font-size:0.8rem;color:var(--muted);text-align:center;padding:1rem 0">No leads yet</p>';
     return;
   }
@@ -572,12 +846,22 @@ async function createSheet() {
     const data = await res.json();
     if (data.success) {
       showToast('✓ Google Sheet created! Opening…');
+
+      // Show the open sheet link
       const row = document.getElementById('sheet-link-row');
       row.style.display = 'block';
       row.innerHTML = `<a class="sheet-open-btn" href="${data.link}" target="_blank">📊 Open Google Sheet →</a>`;
-      // Auto-redirect to the sheet
+
+      // Auto-open
       window.open(data.link, '_blank');
-    } else showToast(data.error, 'error');
+
+      // ── Clear the queue after export ──────────────────────────────────────
+      state.leads = [];
+      renderLeads();
+      showToast('✓ Sheet created & queue cleared!', 'success');
+    } else {
+      showToast(data.error, 'error');
+    }
   } catch(e) { showToast('Failed: ' + e.message, 'error'); }
   setLoading('btn-create-sheet', false);
 }

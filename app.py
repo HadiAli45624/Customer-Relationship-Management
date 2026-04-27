@@ -162,6 +162,18 @@ def lookup_contact():
         except: pass
     return jsonify({'lead_name': lead_name})
 
+def get_message_body(payload):
+    """Recursively extract plain text body from a Gmail message payload."""
+    if payload.get('mimeType') == 'text/plain':
+        data = payload.get('body', {}).get('data', '')
+        if data:
+            return base64.urlsafe_b64decode(data + '==').decode('utf-8', errors='ignore')
+    for part in payload.get('parts', []):
+        result = get_message_body(part)
+        if result:
+            return result
+    return ''
+
 @app.route('/api/fetch-emails', methods=['POST'])
 def fetch_emails():
     if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
@@ -170,22 +182,77 @@ def fetch_emails():
     mode = data.get('mode','inbound')
     max_results = int(data.get('max_results',5))
     gmail,_,_,_ = get_services()
-    query = f"from:{target_email}" if mode=='inbound' else f"to:{target_email}"
-    label_ids = ["INBOX"] if mode=='inbound' else ["SENT"]
+
+    if mode == 'inbound':
+        query = f"from:{target_email}"
+    else:
+        query = f"(to:{target_email} OR from:{target_email})"
+
     try:
-        res = gmail.users().messages().list(userId='me',q=query,maxResults=max_results,labelIds=label_ids).execute()
-    except Exception as ex: return jsonify({'error':str(ex)}),500
-    messages = res.get('messages',[])
-    if not messages: return jsonify({'error':'No emails found for this address and mode.'}),404
+        res = gmail.users().messages().list(
+            userId='me', q=query, maxResults=max_results
+        ).execute()
+    except Exception as ex:
+        # If the requested count exceeds available emails or service hiccup,
+        # fall back to fetching without a limit and take whatever is available
+        try:
+            res = gmail.users().messages().list(
+                userId='me', q=query
+            ).execute()
+        except Exception as ex2:
+            return jsonify({'error': str(ex2)}), 500
+
+    messages = res.get('messages', [])
+    if not messages:
+        return jsonify({'error': 'No emails found for this address and mode.'}), 404
+
+    # Cap to however many actually exist (in case we fetched without maxResults)
+    messages = messages[:max_results]
+
     email_list, email_content = [], ""
+    my_email = session.get('user_email', '').lower()
+
     for msg in messages:
-        m = gmail.users().messages().get(userId='me',id=msg['id'],format='full').execute()
-        hdrs = {h['name']:h['value'] for h in m['payload'].get('headers',[])}
-        row = {'subject':hdrs.get('Subject','(No Subject)'),'from':hdrs.get('From','Unknown'),
-               'to':hdrs.get('To','Unknown'),'date':hdrs.get('Date','Unknown'),'snippet':m.get('snippet','')}
+        m = gmail.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+        hdrs = {h['name']: h['value'] for h in m['payload'].get('headers', [])}
+        from_addr = hdrs.get('From', 'Unknown')
+        to_addr   = hdrs.get('To', 'Unknown')
+        date      = hdrs.get('Date', 'Unknown')
+        subject   = hdrs.get('Subject', '(No Subject)')
+        snippet   = m.get('snippet', '')
+
+        sender_tag = 'YOU' if my_email and my_email in from_addr.lower() else 'THEM'
+
+        body = ''
+        if mode == 'outbound':
+            body = get_message_body(m['payload'])
+            body = body[:600].strip() if body else snippet
+
+        row = {
+            'subject': subject,
+            'from': from_addr,
+            'to': to_addr,
+            'date': date,
+            'snippet': snippet,
+            'direction': sender_tag
+        }
         email_list.append(row)
-        email_content += f"\n--- Email ---\nDate: {row['date']}\nFrom: {row['from']}\nTo: {row['to']}\nSubject: {row['subject']}\nSnippet: {row['snippet']}\n"
-    return jsonify({'emails':email_list,'email_content':email_content})
+
+        if mode == 'outbound':
+            email_content += (
+                f"\n--- [{sender_tag}] {date} ---\n"
+                f"Subject: {subject}\n"
+                f"From: {from_addr}\nTo: {to_addr}\n"
+                f"Body: {body or snippet}\n"
+            )
+        else:
+            email_content += (
+                f"\n--- Email ---\n"
+                f"Date: {date}\nFrom: {from_addr}\nTo: {to_addr}\n"
+                f"Subject: {subject}\nSnippet: {snippet}\n"
+            )
+
+    return jsonify({'emails': email_list, 'email_content': email_content})
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
@@ -196,22 +263,23 @@ def analyze():
     lead_name = data.get('lead_name','the contact')
     lead_email = data.get('lead_email','')
     task = f"""
-You are analyzing {'INBOUND emails (received FROM' if mode=='inbound' else 'OUTBOUND emails (sent BY YOU to'} {lead_name}).
+You are analyzing {'INBOUND emails (received FROM' if mode=='inbound' else 'a full email CONVERSATION WITH'} {lead_name}).
+{"Emails tagged [YOU] were sent by you. Emails tagged [THEM] were sent by the contact." if mode=='outbound' else ""}
 
 1. SUMMARY: Write exactly 3 bullet points (each starting with "• ") summarizing the email history. Each bullet max 15 words.
 
-2. {'SENTIMENT: Their tone? (positive/neutral/negative/urgent)' if mode=='inbound' else 'LAST ACTION: What was the last thing you asked or offered?'}
+2. {'SENTIMENT: What is their overall tone? (positive/neutral/negative/urgent). One word + one sentence explanation.' if mode=='inbound' else 'LAST ACTION: What was the last thing YOU asked, offered, or promised in your most recent email? Be specific.'}
 
 3. LEAD SCORE: Rate 1-10 (10 = highly interested/great progress). Just the number.
 
 4. KEY POINTS: Write exactly 3 bullet points (each starting with "• ") covering:
-   - What {lead_name} needs or expects
-   - The most important topic discussed
-   - Recommended next step
+   - Current status of the relationship / deal
+   - The most important unresolved topic
+   - The single best next action to take
 
 5. FOLLOW-UP DATE: Suggest a follow-up date (e.g. "3 days", "1 week").
 
-6. DRAFT EMAIL: {'Professional, friendly reply (3-5 sentences).' if mode=='inbound' else 'Concise follow-up (3-5 sentences), reference a specific detail. Not pushy.'}
+6. DRAFT EMAIL: {'Professional, friendly reply (3-5 sentences).' if mode=='inbound' else 'Write a concise follow-up email (3-5 sentences). Reference a specific detail from the conversation. Sound natural, not pushy. Pick up exactly where the last email left off.'}
 """
     prompt = f"""Context: Smart email assistant for a startup founder.
 Email History:\n{email_content}
@@ -236,7 +304,7 @@ Respond with EXACTLY these headers:
         'sentiment': extract_section(analysis,"### SENTIMENT") or extract_section(analysis,"### LAST ACTION"),
         'lead_score': parse_score(analysis),
         'key_points': extract_section(analysis,"### KEY POINTS"),
-        'action': extract_section(analysis,"### KEY POINTS"),  # kept for backward compat
+        'action': extract_section(analysis,"### KEY POINTS"),
         'follow_up_days': days,
         'follow_up_date': (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d"),
         'draft_email': extract_section(analysis,"### DRAFT EMAIL"),
@@ -256,6 +324,23 @@ def save_draft():
         draft = gmail.users().drafts().create(userId='me',body={'message':{'raw':raw}}).execute()
         return jsonify({'success':True,'draft_id':draft.get('id')})
     except Exception as ex: return jsonify({'error':str(ex)}),500
+
+# ── NEW: Send email directly ──────────────────────────────────────────────────
+@app.route('/api/send-email', methods=['POST'])
+def send_email():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    data = request.json
+    gmail,_,_,_ = get_services()
+    msg = email.mime.multipart.MIMEMultipart()
+    msg['to'] = data.get('to','')
+    msg['subject'] = data.get('subject','')
+    msg.attach(email.mime.text.MIMEText(data.get('body',''),'plain'))
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    try:
+        sent = gmail.users().messages().send(userId='me', body={'raw': raw}).execute()
+        return jsonify({'success': True, 'message_id': sent.get('id')})
+    except Exception as ex:
+        return jsonify({'error': str(ex)}), 500
 
 @app.route('/api/create-reminder', methods=['POST'])
 def create_reminder():
@@ -310,15 +395,13 @@ def create_sheet():
             "sheets": [{"properties": {"title": "Leads"}}]
         }).execute()
         sid = sp["spreadsheetId"]
-        sheet_id = sp["sheets"][0]["properties"]["sheetId"]  # get actual sheet ID, not hardcoded 0
+        sheet_id = sp["sheets"][0]["properties"]["sheetId"]
 
-        # Write headers
         sheets.spreadsheets().values().update(
             spreadsheetId=sid, range="Leads!A1", valueInputOption="RAW",
             body={"values": [HEADERS]}
         ).execute()
 
-        # Write data rows
         rows = [[
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             l.get('lead_name',''),
@@ -337,12 +420,9 @@ def create_sheet():
                 insertDataOption="INSERT_ROWS", body={"values": rows}
             ).execute()
 
-        # ── Formatting ────────────────────────────────────────────────────────
-        num_rows = len(rows) + 1  # +1 for header
-
+        num_rows = len(rows) + 1
         requests_body = []
 
-        # 1. Bold + dark background + white text for header row
         requests_body.append({
             "repeatCell": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
@@ -363,7 +443,6 @@ def create_sheet():
             }
         })
 
-        # 2. Wrap text + top-align all data cells
         requests_body.append({
             "repeatCell": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": num_rows},
@@ -378,7 +457,6 @@ def create_sheet():
             }
         })
 
-        # 3. Alternating row colors (light grey / white)
         for i in range(1, num_rows):
             color = {"red": 0.96, "green": 0.97, "blue": 0.99} if i % 2 == 0 else {"red": 1, "green": 1, "blue": 1}
             requests_body.append({
@@ -389,7 +467,6 @@ def create_sheet():
                 }
             })
 
-        # 4. Center-align specific columns: Timestamp(0), Direction(3), Score(4), Follow-up(8)
         for col in [0, 3, 4, 8]:
             requests_body.append({
                 "repeatCell": {
@@ -400,16 +477,15 @@ def create_sheet():
                 }
             })
 
-        # 5. Color-code the score column based on value
         for i, lead in enumerate(leads):
             try:
                 s = int(lead.get('lead_score', 5))
                 if s >= 8:
-                    bg = {"red": 0.85, "green": 0.96, "blue": 0.88}   # green tint
+                    bg = {"red": 0.85, "green": 0.96, "blue": 0.88}
                 elif s >= 5:
-                    bg = {"red": 0.99, "green": 0.95, "blue": 0.82}   # yellow tint
+                    bg = {"red": 0.99, "green": 0.95, "blue": 0.82}
                 else:
-                    bg = {"red": 0.99, "green": 0.87, "blue": 0.87}   # red tint
+                    bg = {"red": 0.99, "green": 0.87, "blue": 0.87}
                 requests_body.append({
                     "repeatCell": {
                         "range": {"sheetId": sheet_id, "startRowIndex": i + 1, "endRowIndex": i + 2,
@@ -423,7 +499,6 @@ def create_sheet():
                 })
             except: pass
 
-        # 6. Set column widths
         col_widths = [140, 130, 200, 100, 100, 280, 160, 280, 120]
         for i, width in enumerate(col_widths):
             requests_body.append({
@@ -435,7 +510,6 @@ def create_sheet():
                 }
             })
 
-        # 7. Freeze header row
         requests_body.append({
             "updateSheetProperties": {
                 "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1}},
@@ -443,7 +517,6 @@ def create_sheet():
             }
         })
 
-        # 8. Row height for data rows
         requests_body.append({
             "updateDimensionProperties": {
                 "range": {"sheetId": sheet_id, "dimension": "ROWS",
@@ -453,7 +526,6 @@ def create_sheet():
             }
         })
 
-        # Apply all formatting
         sheets.spreadsheets().batchUpdate(
             spreadsheetId=sid,
             body={"requests": requests_body}
