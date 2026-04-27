@@ -197,11 +197,20 @@ def analyze():
     lead_email = data.get('lead_email','')
     task = f"""
 You are analyzing {'INBOUND emails (received FROM' if mode=='inbound' else 'OUTBOUND emails (sent BY YOU to'} {lead_name}).
-1. SUMMARY: 2-3 sentence summary of the email history.
+
+1. SUMMARY: Write exactly 3 bullet points (each starting with "• ") summarizing the email history. Each bullet max 15 words.
+
 2. {'SENTIMENT: Their tone? (positive/neutral/negative/urgent)' if mode=='inbound' else 'LAST ACTION: What was the last thing you asked or offered?'}
-3. LEAD SCORE: Rate 1-10 (10 = highly interested/great progress).
-4. {'ACTION NEEDED: What does ' + lead_name + ' need or expect from you?' if mode=='inbound' else 'FOLLOW-UP NEEDED: Is a follow-up needed? Why?'}
+
+3. LEAD SCORE: Rate 1-10 (10 = highly interested/great progress). Just the number.
+
+4. KEY POINTS: Write exactly 3 bullet points (each starting with "• ") covering:
+   - What {lead_name} needs or expects
+   - The most important topic discussed
+   - Recommended next step
+
 5. FOLLOW-UP DATE: Suggest a follow-up date (e.g. "3 days", "1 week").
+
 6. DRAFT EMAIL: {'Professional, friendly reply (3-5 sentences).' if mode=='inbound' else 'Concise follow-up (3-5 sentences), reference a specific detail. Not pushy.'}
 """
     prompt = f"""Context: Smart email assistant for a startup founder.
@@ -209,7 +218,12 @@ Email History:\n{email_content}
 Contact: {lead_name} <{lead_email}>
 {task}
 Respond with EXACTLY these headers:
-### SUMMARY\n### SENTIMENT\n### LEAD SCORE\n### ACTION NEEDED\n### FOLLOW-UP DATE\n### DRAFT EMAIL
+### SUMMARY
+### SENTIMENT
+### LEAD SCORE
+### KEY POINTS
+### FOLLOW-UP DATE
+### DRAFT EMAIL
 """
     try:
         client = Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -221,7 +235,8 @@ Respond with EXACTLY these headers:
         'summary':  extract_section(analysis,"### SUMMARY"),
         'sentiment': extract_section(analysis,"### SENTIMENT") or extract_section(analysis,"### LAST ACTION"),
         'lead_score': parse_score(analysis),
-        'action': extract_section(analysis,"### ACTION NEEDED") or extract_section(analysis,"### FOLLOW-UP NEEDED"),
+        'key_points': extract_section(analysis,"### KEY POINTS"),
+        'action': extract_section(analysis,"### KEY POINTS"),  # kept for backward compat
         'follow_up_days': days,
         'follow_up_date': (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d"),
         'draft_email': extract_section(analysis,"### DRAFT EMAIL"),
@@ -260,8 +275,29 @@ def create_reminder():
         return jsonify({'success':True,'link':created.get('htmlLink')})
     except Exception as ex: return jsonify({'error':str(ex)}),500
 
-HEADERS = ["Timestamp","Lead Name","Lead Email","Mode","Lead Score",
-           "Summary","Sentiment / Last Action","Action Needed / Follow-Up Needed","Follow-Up Date","Draft Email"]
+HEADERS = [
+    "Timestamp", "Lead Name", "Lead Email", "Direction", "Lead Score",
+    "Summary", "Sentiment / Last Action", "Key Points", "Follow-Up Date"
+]
+
+def score_label(score):
+    try:
+        s = int(score)
+        if s >= 8: return f"{s}/10 🔥 Hot"
+        if s >= 5: return f"{s}/10 ⚡ Warm"
+        return f"{s}/10 ❄️ Cold"
+    except:
+        return str(score)
+
+def format_bullets(text):
+    """Ensure bullet points are clean and newline-separated for sheets."""
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    bullets = []
+    for line in lines:
+        if not line.startswith('•'):
+            line = '• ' + line
+        bullets.append(line)
+    return '\n'.join(bullets)
 
 @app.route('/api/create-sheet', methods=['POST'])
 def create_sheet():
@@ -270,22 +306,162 @@ def create_sheet():
     _,sheets,_,_ = get_services()
     try:
         sp = sheets.spreadsheets().create(body={
-            "properties":{"title":f"CRM Leads – {datetime.now().strftime('%Y-%m-%d %H:%M')}"},
-            "sheets":[{"properties":{"title":"Leads"}}]
+            "properties": {"title": f"CRM Leads – {datetime.now().strftime('%Y-%m-%d %H:%M')}"},
+            "sheets": [{"properties": {"title": "Leads"}}]
         }).execute()
         sid = sp["spreadsheetId"]
+        sheet_id = sp["sheets"][0]["properties"]["sheetId"]  # get actual sheet ID, not hardcoded 0
+
+        # Write headers
         sheets.spreadsheets().values().update(
-            spreadsheetId=sid,range="Leads!A1",valueInputOption="RAW",body={"values":[HEADERS]}).execute()
-        rows=[[datetime.now().strftime("%Y-%m-%d %H:%M"),
-               l.get('lead_name',''),l.get('lead_email',''),l.get('mode',''),l.get('lead_score',''),
-               l.get('summary','')[:400],l.get('sentiment','')[:200],l.get('action','')[:400],
-               l.get('follow_up_date',''),l.get('draft_email','')[:600]] for l in leads]
+            spreadsheetId=sid, range="Leads!A1", valueInputOption="RAW",
+            body={"values": [HEADERS]}
+        ).execute()
+
+        # Write data rows
+        rows = [[
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            l.get('lead_name',''),
+            l.get('lead_email',''),
+            '📥 Inbound' if l.get('mode') == 'inbound' else '📤 Outbound',
+            score_label(l.get('lead_score', '')),
+            format_bullets(l.get('summary', '')[:500]),
+            l.get('sentiment',''),
+            format_bullets(l.get('key_points', l.get('action',''))[:500]),
+            l.get('follow_up_date',''),
+        ] for l in leads]
+
         if rows:
             sheets.spreadsheets().values().append(
-                spreadsheetId=sid,range="Leads!A1",valueInputOption="RAW",
-                insertDataOption="INSERT_ROWS",body={"values":rows}).execute()
-        return jsonify({'success':True,'link':f"https://docs.google.com/spreadsheets/d/{sid}"})
-    except Exception as ex: return jsonify({'error':str(ex)}),500
+                spreadsheetId=sid, range="Leads!A1", valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS", body={"values": rows}
+            ).execute()
+
+        # ── Formatting ────────────────────────────────────────────────────────
+        num_rows = len(rows) + 1  # +1 for header
+
+        requests_body = []
+
+        # 1. Bold + dark background + white text for header row
+        requests_body.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.11, "green": 0.13, "blue": 0.16},
+                        "textFormat": {
+                            "bold": True,
+                            "foregroundColor": {"red": 0.91, "green": 0.91, "blue": 0.94},
+                            "fontSize": 10
+                        },
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                        "wrapStrategy": "WRAP"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
+            }
+        })
+
+        # 2. Wrap text + top-align all data cells
+        requests_body.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": num_rows},
+                "cell": {
+                    "userEnteredFormat": {
+                        "wrapStrategy": "WRAP",
+                        "verticalAlignment": "TOP",
+                        "textFormat": {"fontSize": 9}
+                    }
+                },
+                "fields": "userEnteredFormat(wrapStrategy,verticalAlignment,textFormat)"
+            }
+        })
+
+        # 3. Alternating row colors (light grey / white)
+        for i in range(1, num_rows):
+            color = {"red": 0.96, "green": 0.97, "blue": 0.99} if i % 2 == 0 else {"red": 1, "green": 1, "blue": 1}
+            requests_body.append({
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": i, "endRowIndex": i + 1},
+                    "cell": {"userEnteredFormat": {"backgroundColor": color}},
+                    "fields": "userEnteredFormat(backgroundColor)"
+                }
+            })
+
+        # 4. Center-align specific columns: Timestamp(0), Direction(3), Score(4), Follow-up(8)
+        for col in [0, 3, 4, 8]:
+            requests_body.append({
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": num_rows,
+                               "startColumnIndex": col, "endColumnIndex": col + 1},
+                    "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                    "fields": "userEnteredFormat(horizontalAlignment)"
+                }
+            })
+
+        # 5. Color-code the score column based on value
+        for i, lead in enumerate(leads):
+            try:
+                s = int(lead.get('lead_score', 5))
+                if s >= 8:
+                    bg = {"red": 0.85, "green": 0.96, "blue": 0.88}   # green tint
+                elif s >= 5:
+                    bg = {"red": 0.99, "green": 0.95, "blue": 0.82}   # yellow tint
+                else:
+                    bg = {"red": 0.99, "green": 0.87, "blue": 0.87}   # red tint
+                requests_body.append({
+                    "repeatCell": {
+                        "range": {"sheetId": sheet_id, "startRowIndex": i + 1, "endRowIndex": i + 2,
+                                   "startColumnIndex": 4, "endColumnIndex": 5},
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColor": bg,
+                            "textFormat": {"bold": True}
+                        }},
+                        "fields": "userEnteredFormat(backgroundColor,textFormat)"
+                    }
+                })
+            except: pass
+
+        # 6. Set column widths
+        col_widths = [140, 130, 200, 100, 100, 280, 160, 280, 120]
+        for i, width in enumerate(col_widths):
+            requests_body.append({
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                               "startIndex": i, "endIndex": i + 1},
+                    "properties": {"pixelSize": width},
+                    "fields": "pixelSize"
+                }
+            })
+
+        # 7. Freeze header row
+        requests_body.append({
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                "fields": "gridProperties.frozenRowCount"
+            }
+        })
+
+        # 8. Row height for data rows
+        requests_body.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                           "startIndex": 1, "endIndex": num_rows},
+                "properties": {"pixelSize": 90},
+                "fields": "pixelSize"
+            }
+        })
+
+        # Apply all formatting
+        sheets.spreadsheets().batchUpdate(
+            spreadsheetId=sid,
+            body={"requests": requests_body}
+        ).execute()
+
+        return jsonify({'success': True, 'link': f"https://docs.google.com/spreadsheets/d/{sid}"})
+    except Exception as ex:
+        return jsonify({'error': str(ex)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

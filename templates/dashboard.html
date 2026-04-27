@@ -32,14 +32,14 @@ nav { display: flex; align-items: center; justify-content: space-between;
 /* LAYOUT */
 .layout { display: flex; flex: 1; min-height: 0; }
 .sidebar { width: 320px; border-right: 1px solid var(--border);
-            overflow-y: auto; padding: 1.5rem; flex-shrink: 0; }
+            overflow-y: auto; padding: 1.5rem; flex-shrink: 0; display: flex; flex-direction: column; gap: 0.75rem; }
 .main { flex: 1; overflow-y: auto; padding: 2rem; }
 
 /* LEAD QUEUE */
 .sidebar-title { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.1em;
-                  color: var(--muted); text-transform: uppercase; margin-bottom: 1rem; }
+                  color: var(--muted); text-transform: uppercase; }
 .lead-card { background: var(--surface); border: 1px solid var(--border);
-              border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem;
+              border-radius: 10px; padding: 1rem;
               cursor: pointer; transition: all 0.2s; position: relative; }
 .lead-card:hover, .lead-card.active { border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset; }
@@ -59,18 +59,29 @@ nav { display: flex; align-items: center; justify-content: space-between;
                 border-radius: 4px; transition: all 0.2s; }
 .delete-lead:hover { background: var(--danger); color: #fff; }
 
+/* Lead list container — no extra gap between cards */
+#lead-list { display: flex; flex-direction: column; gap: 0.75rem; }
+
 .btn-add { width: 100%; padding: 0.7rem; background: var(--surface2);
             border: 1px dashed var(--border2); border-radius: 10px;
             color: var(--muted); font-size: 0.85rem; cursor: pointer;
-            font-family: 'DM Sans'; transition: all 0.2s; margin-top: 0.5rem; }
+            font-family: 'DM Sans'; transition: all 0.2s; }
 .btn-add:hover { border-color: var(--accent); color: var(--accent); }
 
 .btn-sheet { width: 100%; padding: 0.8rem; background: linear-gradient(135deg,var(--accent),var(--accent2));
               border: none; border-radius: 10px; color: #fff; font-size: 0.9rem;
               font-weight: 600; cursor: pointer; font-family: 'DM Sans';
-              transition: opacity 0.2s; margin-top: 1rem; }
+              transition: opacity 0.2s; }
 .btn-sheet:hover { opacity: 0.85; }
 .btn-sheet:disabled { opacity: 0.4; cursor: not-allowed; }
+.sheet-open-btn { display: flex; align-items: center; gap: 0.6rem; width: 100%;
+                   padding: 0.7rem 1rem; background: rgba(61,214,140,0.08);
+                   border: 1px solid rgba(61,214,140,0.35); border-radius: 10px;
+                   color: var(--success); font-size: 0.85rem; font-weight: 600;
+                   cursor: pointer; font-family: 'DM Sans'; text-decoration: none;
+                   transition: all 0.2s; justify-content: center; }
+.sheet-open-btn:hover { background: rgba(61,214,140,0.15); border-color: var(--success);
+                         box-shadow: 0 0 12px rgba(61,214,140,0.15); }
 
 /* FORM SECTION */
 .form-section { background: var(--surface); border: 1px solid var(--border);
@@ -151,7 +162,7 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
 .toast.error { border-color: var(--danger); color: var(--danger); }
 .empty-state { text-align: center; padding: 3rem 2rem; color: var(--muted); }
 .empty-state .icon { font-size: 2.5rem; margin-bottom: 1rem; }
-.sheet-link-row { margin-top: 1rem; }
+.sheet-link-row { margin-top: 0; }
 .sheet-link-row a { color: var(--success); font-size: 0.88rem; }
 .divider { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
 </style>
@@ -170,12 +181,17 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
   <!-- SIDEBAR: Lead Queue -->
   <aside class="sidebar">
     <div class="sidebar-title">Lead queue (<span id="lead-count">0</span>)</div>
-    <div id="lead-list"></div>
-    <button class="btn-add" onclick="showAddForm()">+ Analyze new contact</button>
+
+    <!-- Sheet button ABOVE the queue -->
     <button class="btn-sheet" id="btn-create-sheet" disabled onclick="createSheet()">
       📊 Create Google Sheet
     </button>
     <div id="sheet-link-row" class="sheet-link-row" style="display:none"></div>
+
+    <!-- Lead cards -->
+    <div id="lead-list"></div>
+
+    <button class="btn-add" onclick="showAddForm()">+ Analyze new contact</button>
   </aside>
 
   <!-- MAIN -->
@@ -213,9 +229,9 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
           <label>Number of emails to fetch</label>
           <div class="limit-btns">
             <button class="limit-btn" onclick="setLimit(1,this)">1</button>
-            <button class="limit-btn active" onclick="setLimit(5,this)">5</button>
             <button class="limit-btn" onclick="setLimit(2,this)">2</button>
             <button class="limit-btn" onclick="setLimit(3,this)">3</button>
+            <button class="limit-btn active" onclick="setLimit(5,this)">5</button>
             <button class="limit-btn" onclick="setLimit(10,this)">10</button>
             <input type="text" id="custom-limit" placeholder="Custom…"
                    style="width:80px;padding:0.45rem 0.7rem;font-size:0.85rem"
@@ -295,8 +311,8 @@ textarea { resize: vertical; min-height: 100px; font-family: 'DM Mono'; font-siz
 const state = {
   mode: 'inbound',
   limit: 5,
-  leads: [],          // all saved leads
-  current: null,      // current analysis result
+  leads: [],
+  current: null,
   lookupTimer: null,
 };
 
@@ -372,7 +388,6 @@ async function fetchAndAnalyze() {
   document.getElementById('results-section').classList.remove('show');
 
   try {
-    // 1. Fetch emails
     const fetchRes = await fetch('/api/fetch-emails', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({email: emailVal, mode: state.mode, max_results: state.limit})
@@ -380,7 +395,6 @@ async function fetchAndAnalyze() {
     const fetchData = await fetchRes.json();
     if (fetchData.error) { showToast(fetchData.error, 'error'); setLoading('btn-fetch',false); return; }
 
-    // Render emails
     const emailsHtml = fetchData.emails.map(e => `
       <div class="email-item">
         <div class="email-subj">${e.subject}</div>
@@ -389,7 +403,6 @@ async function fetchAndAnalyze() {
       </div>`).join('');
     document.getElementById('emails-list').innerHTML = emailsHtml;
 
-    // 2. Analyze
     const btn = document.getElementById('btn-fetch');
     btn.innerHTML = `<span class="spinner"></span> Analyzing with Gemini…`;
 
@@ -404,7 +417,6 @@ async function fetchAndAnalyze() {
     const analyzeData = await analyzeRes.json();
     if (analyzeData.error) { showToast(analyzeData.error, 'error'); setLoading('btn-fetch',false); return; }
 
-    // Render results
     const sc = analyzeData.lead_score;
     document.getElementById('ai-grid').innerHTML = `
       <div class="ai-card">
@@ -425,7 +437,6 @@ async function fetchAndAnalyze() {
     document.getElementById('draft-email').value = analyzeData.draft_email;
     document.getElementById('reminder-date').value = analyzeData.follow_up_date;
 
-    // Store current
     state.current = {
       lead_name:      leadName,
       lead_email:     emailVal,
@@ -489,9 +500,15 @@ async function createReminder() {
 function saveLeadAndContinue() {
   if (state.current) {
     state.current.draft_email = document.getElementById('draft-email').value;
-    state.leads.push({...state.current});
-    renderLeads();
-    showToast('✓ Lead saved to queue!');
+    // Only add if not already in queue (prevent duplicates)
+    const alreadyExists = state.leads.some(l => l.lead_email === state.current.lead_email);
+    if (!alreadyExists) {
+      state.leads.push({...state.current});
+      renderLeads();
+      showToast('✓ Lead saved to queue!');
+    } else {
+      showToast('Lead already in queue.', 'error');
+    }
   }
   showAddForm();
   document.getElementById('input-email').value = '';
@@ -504,9 +521,14 @@ function saveLeadAndContinue() {
 function saveLeadOnly() {
   if (state.current) {
     state.current.draft_email = document.getElementById('draft-email').value;
-    state.leads.push({...state.current});
-    renderLeads();
-    showToast('✓ Lead added to queue.');
+    const alreadyExists = state.leads.some(l => l.lead_email === state.current.lead_email);
+    if (!alreadyExists) {
+      state.leads.push({...state.current});
+      renderLeads();
+      showToast('✓ Lead added to queue.');
+    } else {
+      showToast('Lead already in queue.', 'error');
+    }
   }
 }
 
@@ -549,10 +571,12 @@ async function createSheet() {
     });
     const data = await res.json();
     if (data.success) {
-      showToast('✓ Google Sheet created!');
+      showToast('✓ Google Sheet created! Opening…');
       const row = document.getElementById('sheet-link-row');
       row.style.display = 'block';
-      row.innerHTML = `<a href="${data.link}" target="_blank">📊 Open Sheet →</a>`;
+      row.innerHTML = `<a class="sheet-open-btn" href="${data.link}" target="_blank">📊 Open Google Sheet →</a>`;
+      // Auto-redirect to the sheet
+      window.open(data.link, '_blank');
     } else showToast(data.error, 'error');
   } catch(e) { showToast('Failed: ' + e.message, 'error'); }
   setLoading('btn-create-sheet', false);
