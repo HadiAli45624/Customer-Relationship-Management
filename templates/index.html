@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CRM Mail</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0e0f11; --surface: #16181c; --surface2: #1e2126;
+    --border: rgba(255,255,255,0.08); --accent: #4f8ef7;
+    --accent2: #7c5cfc; --text: #e8eaf0; --muted: #7a7f8e;
+    --success: #3dd68c; --danger: #f76f6f;
+  }
+  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text);
+         min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+         justify-content: center; padding: 2rem; }
+  .logo { font-size: 1.1rem; font-weight: 500; letter-spacing: 0.08em;
+           color: var(--muted); text-transform: uppercase; margin-bottom: 3rem; }
+  .logo span { color: var(--accent); }
+  h1 { font-size: clamp(2.2rem, 5vw, 3.5rem); font-weight: 600;
+       line-height: 1.15; text-align: center; margin-bottom: 1.2rem;
+       background: linear-gradient(135deg, #e8eaf0 40%, #4f8ef7);
+        background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .sub { color: var(--muted); font-size: 1.05rem; text-align: center;
+          max-width: 480px; line-height: 1.7; margin-bottom: 3rem; }
+  .btn-google {
+    display: inline-flex; align-items: center; gap: 0.75rem;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); padding: 0.85rem 2rem; border-radius: 50px;
+    font-size: 0.95rem; font-weight: 500; cursor: pointer;
+    text-decoration: none; transition: all 0.2s;
+  }
+  .btn-google:hover { background: var(--surface); border-color: var(--accent);
+                       box-shadow: 0 0 0 1px var(--accent), 0 8px 32px rgba(79,142,247,0.15); }
+  .btn-google svg { width: 20px; height: 20px; flex-shrink: 0; }
+  .already { margin-top: 2rem; text-align: center; }
+  .already p { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.75rem; }
+  .btn-dash { background: var(--accent); color: #fff; padding: 0.75rem 2rem;
+               border-radius: 50px; text-decoration: none; font-weight: 500;
+               font-size: 0.95rem; transition: opacity 0.2s; }
+  .btn-dash:hover { opacity: 0.85; }
+  .features { display: flex; gap: 1.5rem; margin-top: 4rem; flex-wrap: wrap; justify-content: center; }
+  .feat { background: var(--surface); border: 1px solid var(--border);
+           border-radius: 12px; padding: 1.25rem 1.5rem; width: 200px; }
+  .feat-icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .feat-title { font-size: 0.9rem; font-weight: 500; margin-bottom: 0.25rem; }
+  .feat-sub { font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="logo">CRM <span>Mail</span></div>
+<h1>Your AI-powered<br>email CRM</h1>
+<p class="sub">Analyze leads, draft replies, schedule follow-ups, and export everything to Google Sheets — powered by Gemini.</p>
+
+{% if logged_in %}
+<div class="already">
+  <p>Signed in as <strong>{{ user_email }}</strong></p>
+  <a href="/dashboard" class="btn-dash">Go to Dashboard →</a>
+</div>
+{% else %}
+<a href="/authorize" class="btn-google">
+  <svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+  Sign in with Google
+</a>
+{% endif %}
+
+<div class="features">
+  <div class="feat"><div class="feat-icon">📬</div><div class="feat-title">Email analysis</div><div class="feat-sub">Inbound & outbound, scored by Gemini</div></div>
+  <div class="feat"><div class="feat-icon">✍️</div><div class="feat-title">Draft replies</div><div class="feat-sub">Save directly to Gmail Drafts</div></div>
+  <div class="feat"><div class="feat-icon">📅</div><div class="feat-title">Follow-ups</div><div class="feat-sub">One-click Google Calendar reminders</div></div>
+  <div class="feat"><div class="feat-icon">📊</div><div class="feat-title">Sheets export</div><div class="feat-sub">Export all leads when you're ready</div></div>
+</div>
+</body>
+</html>

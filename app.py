@@ -1,501 +1,244 @@
-import os
-import os.path
-import base64
+import os, base64, re
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-
-# Google Libraries
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
+from flask import Flask, redirect, url_for, session, request, jsonify, render_template
+from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-
-# Gemini
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
 from google.genai import Client
+from dotenv import load_dotenv
+import email.mime.text, email.mime.multipart
 
 load_dotenv()
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # local dev only
+
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret")
 
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.compose',
     'https://www.googleapis.com/auth/gmail.send',
-    # ── NEW SCOPES ──
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/contacts.readonly',
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
 ]
 
-# ──────────────────────────────────────────────
-# AUTH  (single credential object, all APIs)
-# ──────────────────────────────────────────────
-
-def get_credentials():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=8080)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return creds
-
-
 def get_services():
-    """Build and return all Google API service clients."""
-    creds = get_credentials()
-    gmail     = build('gmail',   'v1',     credentials=creds)
-    sheets    = build('sheets',  'v4',     credentials=creds)
-    calendar  = build('calendar','v3',     credentials=creds)
-    people    = build('people',  'v1',     credentials=creds)
-    return gmail, sheets, calendar, people
+    if 'credentials' not in session:
+        return None, None, None, None
+    creds = Credentials(**session['credentials'])
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        session['credentials'] = creds_to_dict(creds)
+    return (build('gmail','v1',credentials=creds), build('sheets','v4',credentials=creds),
+            build('calendar','v3',credentials=creds), build('people','v1',credentials=creds))
 
+def creds_to_dict(c):
+    return {'token':c.token,'refresh_token':c.refresh_token,'token_uri':c.token_uri,
+            'client_id':c.client_id,'client_secret':c.client_secret,'scopes':c.scopes}
 
-# ──────────────────────────────────────────────
-# EMAIL FETCHING
-# ──────────────────────────────────────────────
+def extract_section(text, header):
+    if header not in text: return ""
+    after = text.split(header,1)[1]
+    return after.split("###",1)[0].strip() if "###" in after else after.strip()
 
-def fetch_emails(service, mode="inbound", target_email=None, max_results=5):
-    """
-    mode='inbound'  → emails received FROM target (or full inbox)
-    mode='outbound' → emails YOU sent TO target (or full sent folder)
-    """
-    if mode == "inbound":
-        query     = f"from:{target_email}" if target_email else "label:INBOX"
-        label_ids = ["INBOX"]
-    else:
-        query     = f"to:{target_email}" if target_email else "in:sent"
-        label_ids = ["SENT"]
+def parse_score(text):
+    for tok in extract_section(text,"### LEAD SCORE").split():
+        tok=tok.strip(".,/()")
+        if tok.isdigit() and 1<=int(tok)<=10: return int(tok)
+    return 5
 
-    results = service.users().messages().list(
-        userId='me', q=query, maxResults=max_results, labelIds=label_ids
-    ).execute()
+def parse_days(text):
+    m=re.search(r'(\d+)\s*(day|week|month)',extract_section(text,"### FOLLOW-UP DATE").lower())
+    if m:
+        n,u=int(m.group(1)),m.group(2)
+        return n*(7 if u=="week" else 30 if u=="month" else 1)
+    return 3
 
-    messages = results.get('messages', [])
-    if not messages:
-        return [], ""
+@app.route('/')
+def index():
+    return render_template('index.html', logged_in='credentials' in session,
+                           user_name=session.get('user_name',''), user_email=session.get('user_email',''))
 
-    email_list    = []
-    email_content = ""
+@app.route('/authorize')
+def authorize():
+    flow = Flow.from_client_secrets_file('credentials.json', scopes=SCOPES)
+    flow.redirect_uri = url_for('oauth2callback', _external=True)
+    auth_url, state = flow.authorization_url(access_type='offline', prompt='consent')
+    session['state'] = state
+    return redirect(auth_url)
 
-    for msg in messages:
-        m = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
-        headers = {h['name']: h['value'] for h in m['payload'].get('headers', [])}
-        subject = headers.get('Subject', '(No Subject)')
-        sender  = headers.get('From', 'Unknown')
-        to      = headers.get('To',   'Unknown')
-        date    = headers.get('Date', 'Unknown')
-        snippet = m.get('snippet', '')
-
-        email_list.append({
-            'id': msg['id'], 'subject': subject,
-            'from': sender,  'to': to,
-            'date': date,    'snippet': snippet
-        })
-        email_content += (
-            f"\n--- Email ---"
-            f"\nDate: {date}\nFrom: {sender}\nTo: {to}"
-            f"\nSubject: {subject}\nSnippet: {snippet}\n"
-        )
-
-    return email_list, email_content
-
-
-# ──────────────────────────────────────────────
-# GOOGLE PEOPLE API — auto-resolve contact name
-# ──────────────────────────────────────────────
-
-def lookup_contact_name(people_service, email_address):
-    """
-    Search Google Contacts for a contact matching the given email address.
-    Returns their display name, or None if not found.
-    """
+@app.route('/oauth2callback')
+def oauth2callback():
+    flow = Flow.from_client_secrets_file('credentials.json', scopes=SCOPES, state=session['state'])
+    flow.redirect_uri = url_for('oauth2callback', _external=True)
+    flow.fetch_token(authorization_response=request.url)
+    creds = flow.credentials
+    session['credentials'] = creds_to_dict(creds)
     try:
-        results = people_service.people().searchContacts(
-            query=email_address,
-            readMask='names,emailAddresses'
-        ).execute()
-
-        for person in results.get('results', []):
-            p = person.get('person', {})
-            emails = p.get('emailAddresses', [])
-            for e in emails:
-                if e.get('value', '').lower() == email_address.lower():
-                    names = p.get('names', [])
-                    if names:
-                        return names[0].get('displayName')
-    except Exception as ex:
-        print(f"  ⚠️  Could not fetch contact: {ex}")
-    return None
-
-
-# ──────────────────────────────────────────────
-# AI ANALYSIS (Gemini)
-# ──────────────────────────────────────────────
-
-def analyze_and_draft(email_history, mode, lead_name="the contact", lead_email=""):
-    client = Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-    if mode == "inbound":
-        task_prompt = f"""
-You are analyzing INBOUND emails (received FROM {lead_name}).
-
-Tasks:
-1. SUMMARY: Briefly summarize what {lead_name} has been saying/asking (2-3 sentences).
-2. SENTIMENT: What is their tone? (positive / neutral / negative / urgent)
-3. LEAD SCORE: Rate this lead from 1–10 based on their engagement and intent (10 = highly interested).
-4. ACTION NEEDED: What does {lead_name} need or expect from you?
-5. FOLLOW-UP DATE: Suggest a follow-up date (e.g., "3 days", "1 week"). Be specific.
-6. DRAFT REPLY: Write a professional, friendly reply (3-5 sentences) that directly addresses their latest message.
-        """
-    else:
-        task_prompt = f"""
-You are analyzing OUTBOUND emails (sent BY YOU to {lead_name}).
-
-Tasks:
-1. SUMMARY: Briefly summarize what you have been communicating to {lead_name} (2-3 sentences).
-2. LAST ACTION: What was the last thing you asked or offered {lead_name}?
-3. LEAD SCORE: Rate this lead from 1–10 based on the conversation momentum (10 = great progress).
-4. FOLLOW-UP NEEDED: Has enough been communicated, or is a follow-up needed? Why?
-5. FOLLOW-UP DATE: Suggest a follow-up date (e.g., "3 days", "1 week"). Be specific.
-6. DRAFT FOLLOW-UP: Write a concise, friendly follow-up email (3-5 sentences) referencing a specific detail from the history. Do NOT be pushy.
-        """
-
-    prompt = f"""
-Context: You are a smart email assistant for a startup founder.
-
-Email History:
-{email_history}
-
-Lead/Contact Name: {lead_name}
-Lead/Contact Email: {lead_email}
-
-{task_prompt}
-
-Format your response with these EXACT headers (no extra text before the first header):
-### SUMMARY
-### SENTIMENT
-### LEAD SCORE
-### ACTION NEEDED
-### FOLLOW-UP DATE
-### DRAFT EMAIL
-"""
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text
-
-
-# ──────────────────────────────────────────────
-# PARSE HELPERS
-# ──────────────────────────────────────────────
-
-def _extract_section(analysis: str, header: str) -> str:
-    """Pull the text under a ### HEADER up to the next ### header."""
-    if header not in analysis:
-        return ""
-    after = analysis.split(header, 1)[1]
-    # stop at next ### section
-    if "###" in after:
-        after = after.split("###", 1)[0]
-    return after.strip()
-
-
-def parse_lead_score(analysis: str) -> int:
-    """Return an integer 1-10 from the LEAD SCORE section."""
-    section = _extract_section(analysis, "### LEAD SCORE")
-    for token in section.split():
-        token = token.strip(".,/")
-        if token.isdigit():
-            val = int(token)
-            if 1 <= val <= 10:
-                return val
-    return 5  # default
-
-
-def parse_follow_up_days(analysis: str) -> int:
-    """Return the number of days until follow-up from FOLLOW-UP DATE section."""
-    section = _extract_section(analysis, "### FOLLOW-UP DATE").lower()
-    import re
-    match = re.search(r'(\d+)\s*(day|week|month)', section)
-    if match:
-        num  = int(match.group(1))
-        unit = match.group(2)
-        if unit == "week":  return num * 7
-        if unit == "month": return num * 30
-        return num
-    return 3  # default: 3 days
-
-
-def parse_draft_email(analysis: str) -> str:
-    return _extract_section(analysis, "### DRAFT EMAIL")
-
-
-# ──────────────────────────────────────────────
-# GOOGLE SHEETS — export lead data
-# ──────────────────────────────────────────────
-
-SHEET_NAME = "CRM Leads"
-HEADERS    = ["Timestamp", "Lead Name", "Lead Email", "Mode",
-              "Lead Score", "Summary", "Sentiment / Last Action",
-              "Action Needed / Follow-Up Needed", "Follow-Up Date", "Draft Email"]
-
-
-def get_or_create_sheet(sheets_service):
-    """
-    Look for an existing spreadsheet named CRM Leads in Drive.
-    If not found, create one and add headers.
-    Returns the spreadsheet ID.
-    """
-    # Store sheet ID locally so we reuse the same sheet across runs
-    id_file = ".crm_sheet_id"
-    if os.path.exists(id_file):
-        with open(id_file) as f:
-            return f.read().strip()
-
-    # Create new spreadsheet
-    body = {
-        "properties": {"title": SHEET_NAME},
-        "sheets": [{"properties": {"title": "Leads"}}]
-    }
-    sheet = sheets_service.spreadsheets().create(body=body).execute()
-    sid   = sheet["spreadsheetId"]
-
-    # Write headers
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=sid,
-        range="Leads!A1",
-        valueInputOption="RAW",
-        body={"values": [HEADERS]}
-    ).execute()
-
-    with open(id_file, "w") as f:
-        f.write(sid)
-
-    print(f"\n📊 Created Google Sheet: https://docs.google.com/spreadsheets/d/{sid}")
-    return sid
-
-
-def export_to_sheet(sheets_service, lead_name, lead_email, mode, analysis):
-    """Append one row of lead data to the CRM Google Sheet."""
-    sid = get_or_create_sheet(sheets_service)
-
-    score       = parse_lead_score(analysis)
-    days        = parse_follow_up_days(analysis)
-    follow_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-    summary     = _extract_section(analysis, "### SUMMARY")
-    sentiment   = (_extract_section(analysis, "### SENTIMENT")
-                   or _extract_section(analysis, "### LAST ACTION"))
-    action      = (_extract_section(analysis, "### ACTION NEEDED")
-                   or _extract_section(analysis, "### FOLLOW-UP NEEDED"))
-    draft       = parse_draft_email(analysis)
-
-    row = [
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        lead_name, lead_email, mode,
-        score, summary[:300], sentiment[:200],
-        action[:300], follow_date, draft[:500]
-    ]
-
-    sheets_service.spreadsheets().values().append(
-        spreadsheetId=sid,
-        range="Leads!A1",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [row]}
-    ).execute()
-
-    print(f"\n📊 Lead exported to Google Sheet (row added).")
-    print(f"   🔗 https://docs.google.com/spreadsheets/d/{sid}")
-    return sid, score, days
-
-
-# ──────────────────────────────────────────────
-# GOOGLE CALENDAR — create follow-up reminder
-# ──────────────────────────────────────────────
-
-def create_calendar_reminder(calendar_service, lead_name, lead_email, days_from_now, mode):
-    """Create a follow-up Calendar event N days from today."""
-    follow_up_date = datetime.now() + timedelta(days=days_from_now)
-    date_str       = follow_up_date.strftime("%Y-%m-%d")
-
-    action_word = "reply to" if mode == "inbound" else "follow up with"
-    title       = f"📧 {action_word.capitalize()} {lead_name}"
-    description = (
-        f"CRM Reminder: {action_word} {lead_name} ({lead_email}).\n"
-        f"Auto-created by CRM Email Assistant on {datetime.now().strftime('%Y-%m-%d')}."
-    )
-
-    event = {
-        "summary":     title,
-        "description": description,
-        "start": {"date": date_str},
-        "end":   {"date": date_str},
-        "reminders": {
-            "useDefault": False,
-            "overrides":  [{"method": "email", "minutes": 9 * 60},
-                           {"method": "popup", "minutes": 30}]
-        },
-        "attendees": [{"email": lead_email}]
-    }
-
-    created = calendar_service.events().insert(
-        calendarId='primary', body=event
-    ).execute()
-
-    print(f"\n📅 Calendar reminder created for {date_str}.")
-    print(f"   🔗 {created.get('htmlLink')}")
-    return created
-
-
-# ──────────────────────────────────────────────
-# SEND / DRAFT EMAIL
-# ──────────────────────────────────────────────
-
-def send_email(service, to_email, subject, body):
-    """Save a draft to Gmail Drafts folder."""
-    import email.mime.text
-    import email.mime.multipart
-
-    message = email.mime.multipart.MIMEMultipart()
-    message['to']      = to_email
-    message['subject'] = subject
-    message.attach(email.mime.text.MIMEText(body, 'plain'))
-
-    raw   = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    draft = service.users().drafts().create(
-        userId='me', body={'message': {'raw': raw}}
-    ).execute()
-    return draft
-
-
-# ──────────────────────────────────────────────
-# CLI DISPLAY HELPERS
-# ──────────────────────────────────────────────
-
-def print_header():
-    print("\n" + "="*55)
-    print("       📧  CRM Email Assistant  📧")
-    print("="*55)
-
-def print_emails(email_list, mode):
-    direction = "RECEIVED" if mode == "inbound" else "SENT"
-    print(f"\n📬 {direction} EMAILS ({len(email_list)} found):")
-    print("-" * 55)
-    for i, e in enumerate(email_list, 1):
-        print(f"  [{i}] {e['subject'][:45]}")
-        print(f"       From: {e['from'][:40]}")
-        print(f"       Date: {e['date'][:30]}")
-        print()
-
-
-# ──────────────────────────────────────────────
-# MAIN
-# ──────────────────────────────────────────────
-
-def main():
-    print_header()
-
-    # ── Step 1: Build all services ──
-    print("\n⏳ Connecting to Google APIs...")
-    gmail, sheets, calendar, people = get_services()
-    print("✅ Connected to Gmail, Sheets, Calendar & People APIs.")
-
-    # ── Step 2: Choose mode ──
-    print("\nWhat would you like to do?")
-    print("  [1] Analyze INBOUND emails (emails received FROM someone)")
-    print("  [2] Analyze OUTBOUND emails (emails YOU sent TO someone)")
-    mode_choice = input("\nEnter 1 or 2: ").strip()
-
-    mode = "inbound" if mode_choice == "1" else "outbound"
-    print(f"\n✅ Mode: {mode.upper()}")
-
-    # ── Step 3: Get target email ──
-    target = input("\nEnter the contact's email address (or leave blank for full folder): ").strip()
-
-    # ── Step 4: Auto-resolve name from Google Contacts ──
-    lead_name = None
-    if target:
-        print("🔍 Looking up contact in Google Contacts...")
-        lead_name = lookup_contact_name(people, target)
-        if lead_name:
-            print(f"   ✅ Found: {lead_name}")
-        else:
-            print("   ℹ️  Not found in Contacts.")
-
-    if not lead_name:
-        lead_name = input("Enter their name (or leave blank): ").strip() or "the contact"
-
-    # ── Step 5: How many emails ──
-    try:
-        max_results = int(input("How many recent emails to fetch? (default 5): ").strip() or "5")
-    except ValueError:
-        max_results = 5
-
-    # ── Step 6: Fetch emails ──
-    print(f"\n⏳ Fetching {mode} emails...")
-    email_list, email_content = fetch_emails(
-        gmail, mode=mode,
-        target_email=target if target else None,
-        max_results=max_results
-    )
-
-    if not email_list:
-        print("\n❌ No emails found. Try a different email or mode.")
-        return
-
-    print_emails(email_list, mode)
-
-    # ── Step 7: AI analysis ──
-    print("🤖 Analyzing with Gemini AI...\n")
-    analysis = analyze_and_draft(email_content, mode, lead_name, target)
-
-    print("=" * 55)
-    print("           AI ANALYSIS & DRAFT")
-    print("=" * 55)
-    print(analysis)
-    print("=" * 55)
-
-    # ── Step 8: Export to Google Sheets ──
-    export_choice = input("\n📊 Export lead data to Google Sheets? (y/n): ").strip().lower()
-    days_for_calendar = 3  # fallback
-    if export_choice == 'y':
+        info = build('oauth2','v2',credentials=creds).userinfo().get().execute()
+        session['user_name']  = info.get('name','')
+        session['user_email'] = info.get('email','')
+    except: pass
+    return redirect(url_for('dashboard'))
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
+
+@app.route('/dashboard')
+def dashboard():
+    if 'credentials' not in session: return redirect(url_for('index'))
+    return render_template('dashboard.html',
+                           user_name=session.get('user_name',''), user_email=session.get('user_email',''))
+
+@app.route('/api/lookup-contact', methods=['POST'])
+def lookup_contact():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    email_addr = request.json.get('email','').strip()
+    _,_,_,people = get_services()
+    lead_name = ''
+    if email_addr and people:
         try:
-            _, score, days_for_calendar = export_to_sheet(
-                sheets, lead_name, target or "N/A", mode, analysis
-            )
-            print(f"   Lead Score: {score}/10  |  Follow-up in {days_for_calendar} days")
-        except Exception as ex:
-            print(f"   ⚠️  Sheets export failed: {ex}")
+            res = people.people().searchContacts(query=email_addr, readMask='names,emailAddresses').execute()
+            for person in res.get('results',[]):
+                p = person.get('person',{})
+                for e in p.get('emailAddresses',[]):
+                    if e.get('value','').lower()==email_addr.lower():
+                        names=p.get('names',[])
+                        if names: lead_name=names[0].get('displayName','')
+        except: pass
+    return jsonify({'lead_name': lead_name})
 
-    # ── Step 9: Create Calendar reminder ──
-    if target:
-        cal_choice = input("\n📅 Create a follow-up reminder in Google Calendar? (y/n): ").strip().lower()
-        if cal_choice == 'y':
-            try:
-                create_calendar_reminder(
-                    calendar, lead_name, target, days_for_calendar, mode
-                )
-            except Exception as ex:
-                print(f"   ⚠️  Calendar reminder failed: {ex}")
+@app.route('/api/fetch-emails', methods=['POST'])
+def fetch_emails():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    data = request.json
+    target_email = data.get('email','').strip()
+    mode = data.get('mode','inbound')
+    max_results = int(data.get('max_results',5))
+    gmail,_,_,_ = get_services()
+    query = f"from:{target_email}" if mode=='inbound' else f"to:{target_email}"
+    label_ids = ["INBOX"] if mode=='inbound' else ["SENT"]
+    try:
+        res = gmail.users().messages().list(userId='me',q=query,maxResults=max_results,labelIds=label_ids).execute()
+    except Exception as ex: return jsonify({'error':str(ex)}),500
+    messages = res.get('messages',[])
+    if not messages: return jsonify({'error':'No emails found for this address and mode.'}),404
+    email_list, email_content = [], ""
+    for msg in messages:
+        m = gmail.users().messages().get(userId='me',id=msg['id'],format='full').execute()
+        hdrs = {h['name']:h['value'] for h in m['payload'].get('headers',[])}
+        row = {'subject':hdrs.get('Subject','(No Subject)'),'from':hdrs.get('From','Unknown'),
+               'to':hdrs.get('To','Unknown'),'date':hdrs.get('Date','Unknown'),'snippet':m.get('snippet','')}
+        email_list.append(row)
+        email_content += f"\n--- Email ---\nDate: {row['date']}\nFrom: {row['from']}\nTo: {row['to']}\nSubject: {row['subject']}\nSnippet: {row['snippet']}\n"
+    return jsonify({'emails':email_list,'email_content':email_content})
 
-    # ── Step 10: Save Gmail draft ──
-    if target:
-        save = input("\n💾 Save the drafted email as a Gmail Draft? (y/n): ").strip().lower()
-        if save == 'y':
-            draft_body = parse_draft_email(analysis)
-            subject_input = input("Enter email subject: ").strip()
-            result = send_email(gmail, target, subject_input, draft_body)
-            print(f"\n✅ Draft saved! Draft ID: {result.get('id')}")
-            print("   Check your Gmail Drafts folder.")
+@app.route('/api/analyze', methods=['POST'])
+def analyze():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    data = request.json
+    email_content = data.get('email_content','')
+    mode = data.get('mode','inbound')
+    lead_name = data.get('lead_name','the contact')
+    lead_email = data.get('lead_email','')
+    task = f"""
+You are analyzing {'INBOUND emails (received FROM' if mode=='inbound' else 'OUTBOUND emails (sent BY YOU to'} {lead_name}).
+1. SUMMARY: 2-3 sentence summary of the email history.
+2. {'SENTIMENT: Their tone? (positive/neutral/negative/urgent)' if mode=='inbound' else 'LAST ACTION: What was the last thing you asked or offered?'}
+3. LEAD SCORE: Rate 1-10 (10 = highly interested/great progress).
+4. {'ACTION NEEDED: What does ' + lead_name + ' need or expect from you?' if mode=='inbound' else 'FOLLOW-UP NEEDED: Is a follow-up needed? Why?'}
+5. FOLLOW-UP DATE: Suggest a follow-up date (e.g. "3 days", "1 week").
+6. DRAFT EMAIL: {'Professional, friendly reply (3-5 sentences).' if mode=='inbound' else 'Concise follow-up (3-5 sentences), reference a specific detail. Not pushy.'}
+"""
+    prompt = f"""Context: Smart email assistant for a startup founder.
+Email History:\n{email_content}
+Contact: {lead_name} <{lead_email}>
+{task}
+Respond with EXACTLY these headers:
+### SUMMARY\n### SENTIMENT\n### LEAD SCORE\n### ACTION NEEDED\n### FOLLOW-UP DATE\n### DRAFT EMAIL
+"""
+    try:
+        client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+        analysis = client.models.generate_content(model="gemini-2.5-flash",contents=prompt).text
+    except Exception as ex: return jsonify({'error':str(ex)}),500
+    days = parse_days(analysis)
+    return jsonify({
+        'analysis': analysis,
+        'summary':  extract_section(analysis,"### SUMMARY"),
+        'sentiment': extract_section(analysis,"### SENTIMENT") or extract_section(analysis,"### LAST ACTION"),
+        'lead_score': parse_score(analysis),
+        'action': extract_section(analysis,"### ACTION NEEDED") or extract_section(analysis,"### FOLLOW-UP NEEDED"),
+        'follow_up_days': days,
+        'follow_up_date': (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d"),
+        'draft_email': extract_section(analysis,"### DRAFT EMAIL"),
+    })
 
-    print("\n✅ Done!\n")
+@app.route('/api/save-draft', methods=['POST'])
+def save_draft():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    data = request.json
+    gmail,_,_,_ = get_services()
+    msg = email.mime.multipart.MIMEMultipart()
+    msg['to'] = data.get('to','')
+    msg['subject'] = data.get('subject','')
+    msg.attach(email.mime.text.MIMEText(data.get('body',''),'plain'))
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    try:
+        draft = gmail.users().drafts().create(userId='me',body={'message':{'raw':raw}}).execute()
+        return jsonify({'success':True,'draft_id':draft.get('id')})
+    except Exception as ex: return jsonify({'error':str(ex)}),500
 
+@app.route('/api/create-reminder', methods=['POST'])
+def create_reminder():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    data = request.json
+    _,_,calendar,_ = get_services()
+    action = "Reply to" if data.get('mode')=='inbound' else "Follow up with"
+    event = {
+        "summary": f"📧 {action} {data.get('lead_name','Contact')}",
+        "description": f"CRM Reminder auto-created for {data.get('lead_email','')}.",
+        "start": {"date": data.get('date','')},
+        "end":   {"date": data.get('date','')},
+        "reminders": {"useDefault":False,"overrides":[{"method":"popup","minutes":30}]},
+    }
+    try:
+        created = calendar.events().insert(calendarId='primary',body=event).execute()
+        return jsonify({'success':True,'link':created.get('htmlLink')})
+    except Exception as ex: return jsonify({'error':str(ex)}),500
 
-if __name__ == "__main__":
-    main()
+HEADERS = ["Timestamp","Lead Name","Lead Email","Mode","Lead Score",
+           "Summary","Sentiment / Last Action","Action Needed / Follow-Up Needed","Follow-Up Date","Draft Email"]
+
+@app.route('/api/create-sheet', methods=['POST'])
+def create_sheet():
+    if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
+    leads = request.json.get('leads',[])
+    _,sheets,_,_ = get_services()
+    try:
+        sp = sheets.spreadsheets().create(body={
+            "properties":{"title":f"CRM Leads – {datetime.now().strftime('%Y-%m-%d %H:%M')}"},
+            "sheets":[{"properties":{"title":"Leads"}}]
+        }).execute()
+        sid = sp["spreadsheetId"]
+        sheets.spreadsheets().values().update(
+            spreadsheetId=sid,range="Leads!A1",valueInputOption="RAW",body={"values":[HEADERS]}).execute()
+        rows=[[datetime.now().strftime("%Y-%m-%d %H:%M"),
+               l.get('lead_name',''),l.get('lead_email',''),l.get('mode',''),l.get('lead_score',''),
+               l.get('summary','')[:400],l.get('sentiment','')[:200],l.get('action','')[:400],
+               l.get('follow_up_date',''),l.get('draft_email','')[:600]] for l in leads]
+        if rows:
+            sheets.spreadsheets().values().append(
+                spreadsheetId=sid,range="Leads!A1",valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",body={"values":rows}).execute()
+        return jsonify({'success':True,'link':f"https://docs.google.com/spreadsheets/d/{sid}"})
+    except Exception as ex: return jsonify({'error':str(ex)}),500
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
