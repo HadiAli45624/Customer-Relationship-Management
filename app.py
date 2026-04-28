@@ -271,13 +271,14 @@ def analyze():
     mode = data.get('mode','inbound')
     lead_name = data.get('lead_name','the contact')
     lead_email = data.get('lead_email','')
-    task = f"""
-You are analyzing {'INBOUND emails (received FROM' if mode=='inbound' else 'a full email CONVERSATION WITH'} {lead_name}).
-{"Emails tagged [YOU] were sent by you. Emails tagged [THEM] were sent by the contact." if mode=='outbound' else ""}
+    
+    if mode == 'inbound':
+        task = """
+You are analyzing INBOUND emails (received FROM the contact).
 
-1. SUMMARY: Write exactly 3 bullet points (each starting with "• ") summarizing the email history. Each bullet max 15 words.
+1. SUMMARY: Write exactly 3 bullet points (each starting with "• ") summarizing the email. Each bullet max 15 words.
 
-2. {'SENTIMENT: What is their overall tone? (positive/neutral/negative/urgent). One word + one sentence explanation.' if mode=='inbound' else 'LAST ACTION: What was the last thing YOU asked, offered, or promised in your most recent email? Be specific.'}
+2. SENTIMENT: What is their overall tone? (positive/neutral/negative/urgent). One word + one sentence explanation.
 
 3. LEAD SCORE: Rate 1-10 (10 = highly interested/great progress). Just the number.
 
@@ -286,38 +287,75 @@ You are analyzing {'INBOUND emails (received FROM' if mode=='inbound' else 'a fu
    - The most important unresolved topic
    - The single best next action to take
 
-5. FOLLOW-UP DATE: Suggest a follow-up date (e.g. "3 days", "1 week").
+5. FOLLOW-UP DATE: Suggest when you should reply to them (e.g. "3 days", "1 week").
 
-6. DRAFT EMAIL: {'Professional, friendly reply (3-5 sentences).' if mode=='inbound' else 'Write a concise follow-up email (3-5 sentences). Reference a specific detail from the conversation. Sound natural, not pushy. Pick up exactly where the last email left off.'}
+6. DRAFT EMAIL: Professional, friendly reply (3-5 sentences).
 """
+    else:  # outbound
+        task = f"""
+You are analyzing an OUTBOUND email YOU JUST SENT to {lead_name}.
+This is YOUR email - you are the sender. Analyze what you said and when to follow up to see if they respond.
+
+1. SUMMARY: Write exactly 3 bullet points (each starting with "• ") summarizing what YOU said in your email. Each bullet max 15 words.
+
+2. FOLLOW_UP_REASON: What are you waiting for them to do? One sentence describing what response or action you expect from them.
+
+3. LEAD SCORE: Rate 1-10 based on your confidence they will respond positively. Just the number.
+
+4. KEY POINTS: Write exactly 3 bullet points (each starting with "• ") covering:
+   - What you asked, offered, or promised
+   - The most important point you made
+   - What you're expecting from them next
+
+5. FOLLOW-UP DATE: Suggest when you should follow up to check if they replied (e.g. "3 days", "1 week", "5 days").
+
+6. FOLLOWUP_REMINDER: A reminder note for yourself about what you're waiting for (2-3 sentences).
+"""
+    
     prompt = f"""Context: Smart email assistant for a startup founder.
-Email History:\n{email_content}
+Email Content:\n{email_content}
 Contact: {lead_name} <{lead_email}>
+
 {task}
+
 Respond with EXACTLY these headers:
 ### SUMMARY
-### SENTIMENT
+{"### FOLLOW_UP_REASON" if mode == 'outbound' else "### SENTIMENT"}
 ### LEAD SCORE
 ### KEY POINTS
 ### FOLLOW-UP DATE
-### DRAFT EMAIL
+{"### FOLLOWUP_REMINDER" if mode == 'outbound' else "### DRAFT EMAIL"}
 """
     try:
         client = Client(api_key=os.getenv("GEMINI_API_KEY"))
-        analysis = client.models.generate_content(model="gemini-2.0-flash",contents=prompt).text
+        analysis = client.models.generate_content(model="gemini-2.5-flash",contents=prompt).text
     except Exception as ex: return jsonify({'error':str(ex)}),500
     days = parse_days(analysis)
-    return jsonify({
-        'analysis': analysis,
-        'summary':  extract_section(analysis,"### SUMMARY"),
-        'sentiment': extract_section(analysis,"### SENTIMENT") or extract_section(analysis,"### LAST ACTION"),
-        'lead_score': parse_score(analysis),
-        'key_points': extract_section(analysis,"### KEY POINTS"),
-        'action': extract_section(analysis,"### KEY POINTS"),
-        'follow_up_days': days,
-        'follow_up_date': (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d"),
-        'draft_email': extract_section(analysis,"### DRAFT EMAIL"),
-    })
+    
+    if mode == 'outbound':
+        return jsonify({
+            'analysis': analysis,
+            'summary': extract_section(analysis,"### SUMMARY"),
+            'sentiment': extract_section(analysis,"### FOLLOW_UP_REASON"),  # What we're waiting for
+            'lead_score': parse_score(analysis),
+            'key_points': extract_section(analysis,"### KEY POINTS"),
+            'action': extract_section(analysis,"### FOLLOWUP_REMINDER"),
+            'follow_up_days': days,
+            'follow_up_date': (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d"),
+            'draft_email': extract_section(analysis,"### FOLLOWUP_REMINDER"),
+        })
+    else:
+        return jsonify({
+            'analysis': analysis,
+            'summary': extract_section(analysis,"### SUMMARY"),
+            'sentiment': extract_section(analysis,"### SENTIMENT"),
+            'lead_score': parse_score(analysis),
+            'key_points': extract_section(analysis,"### KEY POINTS"),
+            'action': extract_section(analysis,"### KEY POINTS"),
+            'follow_up_days': days,
+            'follow_up_date': (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d"),
+            'draft_email': extract_section(analysis,"### DRAFT EMAIL"),
+        })
 
 @app.route('/api/save-draft', methods=['POST'])
 def save_draft():
@@ -356,7 +394,7 @@ def create_reminder():
     if 'credentials' not in session: return jsonify({'error':'Not authenticated'}),401
     data = request.json
     _,_,calendar,_ = get_services()
-    action = "Reply to" if data.get('mode')=='inbound' else "Follow up with"
+    action = "Reply to" if data.get('mode')=='inbound' else "Check reply from"
     event = {
         "summary": f"📧 {action} {data.get('lead_name','Contact')}",
         "description": f"CRM Reminder auto-created for {data.get('lead_email','')}.",
