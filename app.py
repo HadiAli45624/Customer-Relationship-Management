@@ -209,20 +209,13 @@ def fetch_emails():
             userId='me', q=query, maxResults=max_results
         ).execute()
     except Exception as ex:
-        # If the requested count exceeds available emails or service hiccup,
-        # fall back to fetching without a limit and take whatever is available
-        try:
-            res = gmail.users().messages().list(
-                userId='me', q=query
-            ).execute()
-        except Exception as ex2:
-            return jsonify({'error': str(ex2)}), 500
+        return jsonify({'error': str(ex)}), 500
 
     messages = res.get('messages', [])
     if not messages:
         return jsonify({'error': 'No emails found for this address and mode.'}), 404
 
-    # Cap to however many actually exist (in case we fetched without maxResults)
+    # Use however many emails actually exist (may be fewer than requested)
     messages = messages[:max_results]
 
     email_list, email_content = [], ""
