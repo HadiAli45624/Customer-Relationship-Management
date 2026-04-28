@@ -66,9 +66,25 @@ def get_client_secrets():
     global GOOGLE_CLIENT_SECRETS
     if not GOOGLE_CLIENT_SECRETS:
         import json
-        with open('credentials.json') as f:
-            data = json.load(f)
-        GOOGLE_CLIENT_SECRETS = data.get('web', data.get('installed'))
+        
+        # Try environment variable first (for production/Vercel)
+        creds_json = os.getenv('GOOGLE_CREDENTIALS')
+        if creds_json:
+            try:
+                data = json.loads(creds_json)
+                GOOGLE_CLIENT_SECRETS = data.get('web', data.get('installed'))
+                return GOOGLE_CLIENT_SECRETS
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid GOOGLE_CREDENTIALS JSON: {e}")
+        
+        # Fall back to local file (for local development)
+        try:
+            with open('credentials.json') as f:
+                data = json.load(f)
+            GOOGLE_CLIENT_SECRETS = data.get('web', data.get('installed'))
+        except FileNotFoundError:
+            raise ValueError("credentials.json not found and GOOGLE_CREDENTIALS environment variable not set")
+    
     return GOOGLE_CLIENT_SECRETS
 
 @app.route('/')
