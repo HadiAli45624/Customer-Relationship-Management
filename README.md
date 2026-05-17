@@ -1,4 +1,4 @@
-# CRM Mail
+# AI-Powered Email Automation Tool
 
 An AI-powered email CRM that helps you analyze leads, draft intelligent replies, schedule follow-ups, and export everything to Google Sheets — all powered by Google Gemini.
 
